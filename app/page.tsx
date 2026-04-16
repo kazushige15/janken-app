@@ -27,6 +27,12 @@ export default function JankenBattlePage() {
           const newData = payload.new;
           setGameData(newData);
 
+          // 【重要】DB側で手がリセットされたら、自分の画面の選択状態もリセットする
+          if (newData.choice_a === null && newData.choice_b === null) {
+            setMyChoice(null);
+            setIsProcessing(false);
+          }
+
           // 両者の手が揃ったらダメージ計算（Player Aが代表して計算する）
           if (newData.choice_a && newData.choice_b && !isProcessing) {
             if (newData.player_a_id === myId) {
@@ -43,31 +49,29 @@ export default function JankenBattlePage() {
   // 2. ラウンド解決（ダメージ計算）
   const processRound = async (currentData: any) => {
     setIsProcessing(true);
-    // 少し待ってから結果を反映（演出用）
+    // 演出のために1.5秒待機
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     let nextHpA = currentData.player_a_hp;
     let nextHpB = currentData.player_b_hp;
     let nextStatus = 'playing';
 
-    // 勝敗判定
     const a = currentData.choice_a;
     const b = currentData.choice_b;
 
     if (a !== b) {
       if ((a === 'rock' && b === 'scissors') || (a === 'scissors' && b === 'paper') || (a === 'paper' && b === 'rock')) {
-        nextHpB -= 10; // Bの負け
+        nextHpB -= 10;
       } else {
-        nextHpA -= 10; // Aの負け
+        nextHpA -= 10;
       }
     }
 
-    // 決着がついたかチェック
     if (nextHpA <= 0 || nextHpB <= 0) {
       nextStatus = 'finished';
     }
 
-    // データベースを更新して手をリセット
+    // データベースを更新。ここで手が null になる
     await supabase.from('games').update({
       player_a_hp: Math.max(0, nextHpA),
       player_b_hp: Math.max(0, nextHpB),
@@ -75,12 +79,9 @@ export default function JankenBattlePage() {
       choice_b: null,
       status: nextStatus
     }).eq('id', gameId);
-
-    setMyChoice(null);
-    setIsProcessing(false);
   };
 
-  // 3. マッチング
+  // 3. マッチング処理
   const startMatching = async () => {
     setLoading(true);
     const { data: waitingGame } = await supabase.from('games').select('*').eq('status', 'waiting').maybeSingle();
@@ -97,8 +98,9 @@ export default function JankenBattlePage() {
     setLoading(false);
   };
 
+  // 4. 手を送信
   const sendChoice = async (choice: string) => {
-    if (!gameId || myChoice) return;
+    if (!gameId || myChoice || isProcessing) return;
     setMyChoice(choice);
     if (gameData.player_a_id === myId) {
       await supabase.from('games').update({ choice_a: choice }).eq('id', gameId);
@@ -125,7 +127,7 @@ export default function JankenBattlePage() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-between bg-zinc-950 text-white p-8">
-      {/* 相手の情報 */}
+      {/* 相手のHPバー */}
       <div className="w-full max-w-md text-center">
         <div className="flex justify-between items-end mb-2">
           <span className="text-sm font-bold text-zinc-500">ENEMY PREDICTOR</span>
@@ -139,7 +141,6 @@ export default function JankenBattlePage() {
         </div>
       </div>
 
-      {/* バトルメッセージ */}
       <div className="text-center">
         {gameData?.status === 'finished' ? (
           <div className="animate-bounce">
@@ -147,21 +148,23 @@ export default function JankenBattlePage() {
             <button onClick={() => window.location.reload()} className="mt-8 text-xl underline">BACK TO TITLE</button>
           </div>
         ) : (
-          <div className="text-2xl font-mono text-zinc-400">VS</div>
+          <div className="text-2xl font-mono text-zinc-400 italic">
+            {isProcessing ? 'JUDGING...' : 'VS'}
+          </div>
         )}
       </div>
 
-      {/* 自分の情報 */}
+      {/* 自分の操作エリア */}
       <div className="w-full max-w-md text-center">
         <div className="mb-8 flex gap-4 justify-center">
           {['rock', 'scissors', 'paper'].map((c) => (
             <button
               key={c}
               onClick={() => sendChoice(c)}
-              disabled={!!myChoice || gameData?.status === 'finished'}
+              disabled={!!myChoice || isProcessing || gameData?.status === 'finished'}
               className={`text-5xl p-6 rounded-2xl border-2 transition-all ${
-                myChoice === c ? 'border-blue-500 bg-blue-900/40 scale-110' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-              } ${myChoice ? 'opacity-50' : 'active:scale-90'}`}
+                myChoice === c ? 'border-blue-500 bg-blue-900/40 scale-110' : 'border-zinc-700 bg-zinc-900'
+              } ${(!myChoice && !isProcessing) ? 'hover:border-zinc-500' : 'opacity-50 cursor-not-allowed'}`}
             >
               {iconMap[c]}
             </button>
