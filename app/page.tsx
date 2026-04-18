@@ -22,7 +22,6 @@ const HEALS = [
 const ALL_CARDS = [...WEAPONS, ...ARMORS, ...HEALS];
 
 export default function GodFieldPage() {
-  // ブラウザを閉じない限り固定されるID
   const [myId] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('godfield_user_id');
@@ -39,7 +38,7 @@ export default function GodFieldPage() {
   const [loading, setLoading] = useState(false);
   const [selectedArmorIndices, setSelectedArmorIndices] = useState<number[]>([]);
 
-  // リアルタイム通信の安定化
+  // リアルタイム通信
   useEffect(() => {
     if (!gameId) return;
     const channel = supabase.channel(`game-${gameId}`)
@@ -55,45 +54,54 @@ export default function GodFieldPage() {
   const drawCard = () => ALL_CARDS[Math.floor(Math.random() * ALL_CARDS.length)].name;
   const generateHand = () => [...Array(10)].map(() => drawCard());
 
-  // データベース強制清掃
-  const forceReset = async () => {
-    const { error } = await supabase.from('games').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    if (error) console.error(error);
-    window.location.reload();
-  };
-
-  // マッチングロジックの強化
+  // マッチングロジック：空いている部屋を探す or なければ作る
   const startMatching = async () => {
     setLoading(true);
-    // 待機中のゲームを探す
-    const { data: waitingGame } = await supabase.from('games').select('*').eq('status', 'waiting').maybeSingle();
 
-    if (waitingGame && waitingGame.player_a_id !== myId) {
-      // 2人目として参加：IDを強制的に確定させる
-      const { data, error } = await supabase.from('games').update({ 
-        player_b_id: myId, 
-        player_b_hand: generateHand(),
-        status: 'attacking',
-        attacker_id: waitingGame.player_a_id, // 先にいた人が攻撃
-        defender_id: myId                   // 自分が防御
-      }).eq('id', waitingGame.id).select().single();
+    // 1. まず「誰か1人だけが待っている（player_bが不在）」かつ「自分ではない」部屋を探す
+    const { data: openRoom } = await supabase
+      .from('games')
+      .select('*')
+      .eq('status', 'waiting')
+      .is('player_b_id', null)
+      .neq('player_a_id', myId)
+      .maybeSingle();
+
+    if (openRoom) {
+      // 2. 空いている部屋があったらそこに入る（マッチング成立）
+      const { data, error } = await supabase
+        .from('games')
+        .update({ 
+          player_b_id: myId, 
+          player_b_hand: generateHand(),
+          status: 'attacking',
+          attacker_id: openRoom.player_a_id,
+          defender_id: myId
+        })
+        .eq('id', openRoom.id)
+        .select()
+        .single();
       
       if (data) { setGameId(data.id); setGameData(data); }
     } else {
-      // 自分が1人目として待機（既存の待機があればそれを消して新しく作る）
-      await supabase.from('games').delete().eq('player_a_id', myId);
-      const { data } = await supabase.from('games').insert([{ 
-        player_a_id: myId, 
-        player_a_hand: generateHand(),
-        player_a_hp: 50,
-        player_b_hp: 50,
-        status: 'waiting' 
-      }]).select().single();
+      // 3. 空いている部屋がなければ、新しく自分がホストとなって部屋を作る
+      const { data } = await supabase
+        .from('games')
+        .insert([{ 
+          player_a_id: myId, 
+          player_a_hand: generateHand(),
+          player_a_hp: 50,
+          player_b_hp: 50,
+          status: 'waiting' 
+        }])
+        .select()
+        .single();
       if (data) { setGameId(data.id); setGameData(data); }
     }
     setLoading(false);
   };
 
+  // --- カード使用・防御のロジックは変更なし ---
   const useCard = async (cardName: string, index: number) => {
     if (!gameData || gameData.attacker_id !== myId) return;
     const isPlayerA = gameData.player_a_id === myId;
@@ -152,41 +160,34 @@ export default function GodFieldPage() {
 
   if (!gameId || !gameData) return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 text-white p-4">
-      <h1 className="text-7xl font-black mb-12 italic text-transparent bg-clip-text bg-gradient-to-b from-yellow-200 to-yellow-600 tracking-tighter filter drop-shadow-lg">GOD FIELD</h1>
-      <div className="flex flex-col gap-6 w-full max-w-xs">
-        <button onClick={startMatching} disabled={loading} className="w-full py-6 border-2 border-yellow-500 text-yellow-500 text-3xl font-black hover:bg-yellow-500 hover:text-black transition-all shadow-[0_0_15px_rgba(234,179,8,0.3)]">
-          {loading ? 'CONNECTING...' : 'ENTER ARENA'}
-        </button>
-        <button onClick={forceReset} className="text-[10px] text-zinc-700 hover:text-red-500 uppercase tracking-[0.3em] transition-colors">
-          Reset Environment
-        </button>
-      </div>
+      <h1 className="text-7xl font-black mb-12 italic text-transparent bg-clip-text bg-gradient-to-b from-yellow-200 to-yellow-600 tracking-tighter filter drop-shadow-lg text-center leading-tight">GOD FIELD</h1>
+      <button onClick={startMatching} disabled={loading} className="px-12 py-6 border-2 border-yellow-500 text-yellow-500 text-3xl font-black hover:bg-yellow-500 hover:text-black transition-all">
+        {loading ? 'WAITING...' : 'ENTER ARENA'}
+      </button>
+      <p className="mt-8 text-[10px] text-zinc-600 tracking-widest uppercase">Room-based Auto Matching System v2</p>
     </main>
   );
 
   const isAttacker = gameData.attacker_id === myId;
   const isDefender = gameData.defender_id === myId;
   const isMyTurn = (gameData.status === 'attacking' && isAttacker) || (gameData.status === 'defending' && isDefender);
-  
   const myHand = gameData.player_a_id === myId ? gameData.player_a_hand : gameData.player_b_hand;
   const myHp = gameData.player_a_id === myId ? gameData.player_a_hp : gameData.player_b_hp;
   const opponentHp = gameData.player_a_id === myId ? gameData.player_b_hp : gameData.player_a_hp;
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-between bg-zinc-950 text-white p-4 font-sans select-none">
-      {/* 相手HP */}
       <div className="w-full max-w-md mt-2">
         <div className="flex justify-between items-end mb-1 px-1 text-red-500 italic font-black">
           <span className="text-[10px] uppercase tracking-widest text-zinc-500">Enemy Prophet</span>
-          <span className="text-2xl drop-shadow-md">HP {opponentHp}</span>
+          <span className="text-2xl">HP {opponentHp}</span>
         </div>
         <div className="h-2 bg-zinc-900 rounded-full border border-white/5 overflow-hidden">
           <div className="h-full bg-gradient-to-r from-red-900 to-red-500 transition-all duration-700" style={{ width: `${(opponentHp / 50) * 100}%` }}></div>
         </div>
       </div>
 
-      {/* バトル状況表示 */}
-      <div className="text-center w-full max-w-xl py-12 px-4 rounded-[3rem] bg-white/[0.02] border border-white/5 backdrop-blur-md shadow-2xl relative transition-all">
+      <div className="text-center w-full max-w-xl py-12 px-4 rounded-[3rem] bg-white/[0.02] border border-white/5 backdrop-blur-md shadow-2xl relative">
         {gameData.status === 'finished' ? (
           <div>
             <h2 className="text-6xl font-black text-yellow-500 italic mb-6 tracking-tighter">{myHp > 0 ? 'VICTORY' : 'DEFEATED'}</h2>
@@ -198,7 +199,7 @@ export default function GodFieldPage() {
                 {gameData.status === 'defending' ? `💥 [${gameData.selected_card}] が飛来！` : 'BATTLE PHASE'}
             </h2>
             <p className={`text-[11px] font-black tracking-[0.4em] uppercase ${isMyTurn ? 'text-yellow-400 animate-pulse' : 'text-zinc-600'}`}>
-                {isMyTurn ? ">>> ACTIONS AVAILABLE <<<" : "OPPONENT THINKING..."}
+                {isMyTurn ? ">>> YOUR TURN <<<" : "OPPONENT THINKING..."}
             </p>
             {gameData.status === 'defending' && isDefender && (
                 <div className="mt-8 flex gap-4 justify-center">
@@ -210,17 +211,13 @@ export default function GodFieldPage() {
         )}
       </div>
 
-      {/* 手札セクション */}
       <div className="w-full max-w-4xl pb-4">
         <div className="grid grid-cols-5 gap-3 justify-items-center mb-10 px-2">
           {myHand?.map((cardName: string, i: number) => {
             const cardInfo = ALL_CARDS.find(c => c.name === cardName);
             const isSelected = selectedArmorIndices.includes(i);
             const isArmor = cardInfo?.type === 'armor';
-            
-            let canClick = isMyTurn && gameData.status !== 'finished';
-            if (gameData.status === 'attacking' && isArmor) canClick = false;
-            if (gameData.status === 'defending' && !isArmor) canClick = false;
+            let canClick = isMyTurn && gameData.status !== 'finished' && ((gameData.status === 'attacking' && !isArmor) || (gameData.status === 'defending' && isArmor));
 
             return (
               <button key={i} 
@@ -231,16 +228,15 @@ export default function GodFieldPage() {
                 disabled={!canClick}
                 className={`relative w-full aspect-[2/3] max-w-[95px] rounded-2xl border-2 flex flex-col items-center justify-between p-1 transition-all duration-300 ${
                   isSelected ? 'border-cyan-400 bg-cyan-900/40 -translate-y-8 scale-110 shadow-[0_0_25px_rgba(34,211,238,0.5)]' :
-                  canClick ? 'border-zinc-500 bg-gradient-to-b from-zinc-800 to-zinc-950 hover:border-yellow-500 hover:shadow-xl' : 
-                  'border-zinc-900 bg-black opacity-20 scale-95 grayscale pointer-events-none'
+                  canClick ? 'border-zinc-500 bg-gradient-to-b from-zinc-800 to-zinc-950 hover:border-yellow-500 shadow-xl' : 
+                  'border-zinc-900 bg-black opacity-20 scale-95 grayscale'
                 }`}
               >
                 {cardInfo?.type === 'weapon' && cardInfo.icon.endsWith('.png') ? (
-                  <img src={cardInfo.icon} className="w-[85%] aspect-square object-contain mt-3 drop-shadow-[0_0_10px_rgba(255,255,255,0.2)]" alt="" />
+                  <img src={cardInfo.icon} className="w-[85%] aspect-square object-contain mt-3 drop-shadow-lg" alt="" />
                 ) : (
                   <span className="text-3xl mt-4 drop-shadow-md">{cardInfo?.icon}</span>
                 )}
-                
                 <div className="w-full bg-black/60 backdrop-blur-md rounded-b-xl py-2 px-0.5 text-center mt-auto">
                   <p className="text-[7.5px] font-black uppercase tracking-tighter text-zinc-100 mb-1 truncate">{cardName}</p>
                   <div className={`text-[9px] font-black py-0.5 rounded-md ${
@@ -254,15 +250,13 @@ export default function GodFieldPage() {
             );
           })}
         </div>
-
-        {/* 自分HP */}
         <div className="max-w-md mx-auto px-1">
             <div className="h-2.5 bg-zinc-900 rounded-full border border-white/5 overflow-hidden mb-2">
               <div className="h-full bg-gradient-to-r from-blue-800 to-blue-500 transition-all duration-700 shadow-[0_0_15px_rgba(37,99,235,0.3)]" style={{ width: `${(myHp / 50) * 100}%` }}></div>
             </div>
             <div className="flex justify-between items-center text-blue-500 italic font-black uppercase tracking-[0.2em]">
                 <span className="text-[10px] text-zinc-500">Your Prophet</span>
-                <span className="text-2xl drop-shadow-md">HP {myHp} / 50</span>
+                <span className="text-2xl">HP {myHp} / 50</span>
             </div>
         </div>
       </div>
